@@ -20,7 +20,7 @@ var ArrayProto = Array.prototype,
   LIB_VERSION = '1.0',
   LIB_NAME = 'QQMini';
 
-// var source_channel_standard = 'utm_source utm_medium utm_campaign utm_content utm_term';
+var source_channel_standard = 'utm_source utm_medium utm_campaign utm_content utm_term';
 
 var sa_referrer = '直接打开';
 sa.lib_version = LIB_VERSION;
@@ -204,6 +204,137 @@ logger.info = function () {
   };
 
 })();
+
+_.setUtm = function (para, prop) {
+  var query = {};
+  if (para && _.isObject(para.query)) {
+    query = _.extend({}, para.query);
+    if (para.query.qrCode) {
+      _.extend(query, _.getObjFromQuery(_.decodeURIComponent(para.query.qrCode)));
+    }
+  }
+  if (para && _.isObject(para.referrerInfo) && para.referrerInfo.extraData) {
+    var extraQuery = {};
+    if (_.isObject(para.referrerInfo.extraData) && !_.isEmptyObject(para.referrerInfo.extraData)) {
+      extraQuery = para.referrerInfo.extraData;
+    } else if (_.isJSONString(para.referrerInfo.extraData)) {
+      extraQuery = JSON.parse(para.referrerInfo.extraData);
+    }
+    _.extend(query, extraQuery);
+  }
+  var utms = _.getUtm(query, '$', '$latest_');
+  _.extend(prop, utms.pre1);
+  return utms;
+};
+
+_.getUtm = function (url, prefix1, prefix2) {
+  var utms = _.getSource(url);
+  var pre1 = {};
+  var pre2 = {};
+  if ((typeof prefix2 === 'undefined') && prefix1) {
+    return {
+      pre1: _.getPrefixUtm(utms, prefix1).$utms || {},
+      pre2: {}
+    };
+  } else if (typeof prefix2 !== 'undefined' && prefix1) {
+    return {
+      pre1: _.getPrefixUtm(utms, prefix1).$utms || {},
+      pre2: _.getPrefixUtm(utms, prefix2).$utms || {}
+    };
+  } else {
+    return {
+      pre1: {},
+      pre2: {}
+    };
+  }
+};
+
+_.getPrefixUtm = function (utms, prefix, prefix_add) {
+  prefix = prefix || '';
+  prefix_add = prefix_add || '_';
+  if (!_.isObject(utms)) {
+    return {};
+  }
+  var $utms = {}, otherUtms = {};
+  for (var i in utms) {
+    if ((' ' + source_channel_standard + ' ').indexOf(' ' + i + ' ') !== -1) {
+      $utms[prefix + i] = utms[i];
+    } else {
+      otherUtms[prefix_add + i] = utms[i];
+    }
+  }
+  return {
+    $utms: $utms,
+    otherUtms: otherUtms
+  };
+};
+
+_.convertObjToParam = function (obj) {
+  var arr = [];
+  for (var i in obj) {
+    arr.push(i + '=' + obj[i]);
+  }
+  return arr.join('&');
+};
+
+_.getQueryParam = function (url, param) {
+  var regexS = "[\\?&]" + param + "=([^&#]*)",
+    regex = new RegExp(regexS),
+    results = regex.exec(url);
+  if (results === null || (results && typeof (results[1]) !== 'string' && results[1].length)) {
+    return '';
+  } else {
+    return _.decodeURIComponent(results[1]);
+  }
+};
+
+_.getSource = function (url) {
+  if (_.isObject(url)) {
+    if (_.isEmptyObject(url)) {
+      return {};
+    } else {
+      for (var i in url) {
+        if ((' ' + source_channel_standard + ' ').indexOf(' ' + i + ' ') === -1) {
+          delete url[i];
+        } else {
+          url[i] = url[i].replace('?', '*');
+        }
+      }
+      url = _.convertObjToParam(url);
+      url = '?' + url;
+    }
+  } else {
+    url = _.decodeURIComponent(url);
+  }
+
+  var campagin_w = source_channel_standard.split(' ');
+  var campaign_keywords = source_channel_standard.split(' ');
+  var kw = '';
+  var params = {};
+
+  url = url.split('?');
+  if (url.length === 2) {
+    url = url[1];
+  } else {
+    return {};
+  }
+
+  url = '?' + url;
+  if (_.isArray(sa.para.source_channel) && sa.para.source_channel.length > 0) {
+    campaign_keywords = campaign_keywords.concat(sa.para.source_channel);
+    campaign_keywords = _.unique(campaign_keywords);
+  }
+  _.each(campaign_keywords, function (kwkey) {
+    kw = _.getQueryParam(url, kwkey);
+    kw = _.decodeURIComponent(kw);
+    if (kw.length) {
+      if (_.include(campagin_w, kwkey)) {
+        params[kwkey] = kw;
+      }
+    }
+  });
+  return params;
+};
 
 _.trim = function (str) {
   return str.replace(/^[\s\uFEFF\xA0]+|[\s\uFEFF\xA0]+$/g, '');
@@ -648,6 +779,7 @@ sa.store = {
       time.setHours(23);
       time.setMinutes(59);
       time.setSeconds(60);
+      sa.setOnceProfile({$first_visit_time: new Date()});
       this.set({
         'distinct_id': this.getUUID(),
         'first_visit_time': visit_time,
@@ -733,11 +865,17 @@ sa.appLaunch = function (para, customProps) {
   if (para && para.path) {
     prop.$url_path = _.getPath(para.path);
   }
+  var utms = _.setUtm(para, prop);
   if (is_first_launch) {
-    sa.setOnceProfile({});
     prop.$is_first_time = true;
+    if (!_.isEmptyObject(utms.pre1)) {
+      sa.setOnceProfile(utms.pre1);
+    }
   } else {
     prop.$is_first_time = false;
+  }
+  if (!_.isEmptyObject(utms.pre2)) {
+    sa.registerApp(utms.pre2);
   }
 
   var scene = _.getMPScene(para.scene);
@@ -761,11 +899,15 @@ sa.appShow = function (para, customProps) {
   if (para && para.path) {
     prop.$url_path = _.getPath(para.path);
   }
+  var utms = _.setUtm(para, prop);
+  if (!_.isEmptyObject(utms.pre2)) {
+    sa.registerApp(utms.pre2);
+  }
 
   var scene = _.getMPScene(para.scene);
   if (scene) {
     prop.$scene = scene;
-    //sa.registerApp({ $latest_scene: prop.$scene });
+    sa.registerApp({ $latest_scene: prop.$scene });
   }
 
   //prop.$url_query = _.setQuery(para.query);
